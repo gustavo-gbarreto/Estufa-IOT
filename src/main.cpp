@@ -7,13 +7,14 @@
 #include <InfluxDbCloud.h>
 
 
-#define DHTPIN    4 
-#define waterpump 18
-#define waterpin  23 //botão de acionamento manual da bomba d'água
-#define soilPin   5
-#define ExaustFan 19
-#define CoolingFan 21
-#define HeatingLed 22 //representaçâo de aquecedor
+#define DHTPIN        4 
+#define waterpump     18
+#define waterpin      23 //botão de acionamento manual da bomba d'água
+#define soilPin       34
+#define ExaustFan     19
+#define CoolingFan    21
+#define HeatingLed    22 //representaçâo de aquecedor
+#define LDRPin        32
 
 
 #define DHTTYPE DHT11   
@@ -40,8 +41,8 @@ ESP8266WiFiMulti wifiMulti;
 #define INFLUXDB_ORG "ac342d73b369637c"
 #define INFLUXDB_BUCKET "Estufa"
 //#define DEVICE            "estufa_001"
-#define INFLUXDB_SEND_TIME    (10000u) //10s
-#define DHT11_REFRESH_TIME    (5000u) //5s
+#define INFLUXDB_SEND_TIME    (5000u) //10s
+#define DHT11_REFRESH_TIME    (2000u) //5s
 #define SENSOR_BUFFER_SIZE    (INFLUXDB_SEND_TIME/DHT11_REFRESH_TIME)
 // Time zone info
 #define TZ_INFO           "UTC-3"
@@ -56,31 +57,32 @@ static uint32_t dht_refresh_timestamp = 0u;
 static uint32_t influxdb_send_timestamp = 0u;
 static void WiFi_Setup( void );
 static void DHT11_TaskInit( void );
-static void DHT11_TaskMng( void );
+static void Measures( void );
 static void InfluxDB_TaskInit( void );
 static void InfluxDB_TaskMng( void );
 static float Get_HumidityValue( void );
 static float Get_TemperatureValue( void );
 static float Get_MoistureValue( void );
+static float Get_LuminosityValue( void );
 
 // Function to calculate the average moisture value
-static float Get_MoistureValue(void) {
-    uint16_t idx = 0u;
-    float temp = 0;
-    for (idx = 0; idx < SENSOR_BUFFER_SIZE; idx++) {
-        temp = temp + Moist_buffer[idx];
-    }
-    temp = temp / SENSOR_BUFFER_SIZE;
-    return temp;
-}
+// Remove this duplicate function definition as it is already defined earlier in the code.
 
 //variaveis
 float dht_temperature = 0;
 float dht_humidity = 0;
-float Moisture = 0;
+float moist_measure = 0;
+float Luminosity = 0;
+
+const float GAMMA = 0.7;
+const float RL10 = 33;
+
+
+//float Moisture = 0;
 static float temp_buffer[SENSOR_BUFFER_SIZE] = { 0 };
 static float humidity_buffer[SENSOR_BUFFER_SIZE] = { 0 };
 static float Moist_buffer[SENSOR_BUFFER_SIZE] = { 0 };
+static float Lumi_buffer[SENSOR_BUFFER_SIZE] = { 0 };
 static uint16_t sensor_buffer_idx = 0;
 
 
@@ -89,6 +91,7 @@ IRAM_ATTR void ManualWatering(){
   delay(1000);
   digitalWrite(waterpump, LOW);
 }
+
 void setup() {
   Serial.begin(115200);
   dht.begin();
@@ -107,10 +110,14 @@ void setup() {
   
 }
 void loop() {
-  DHT11_TaskMng();
+  Measures();
   InfluxDB_TaskMng();
-  
-  if(Moisture > 1433){// aproximadamente 35% de umidade do solo
+  digitalWrite(CoolingFan,HIGH);
+  delay(1000);
+  digitalWrite(CoolingFan,LOW);
+
+  /*
+  if(moist_measure<69){// aproximadamente 35% de umidade do solo
     digitalWrite(waterpump, HIGH);
   }
   else{
@@ -133,6 +140,7 @@ void loop() {
     digitalWrite(CoolingFan, LOW);
     digitalWrite(HeatingLed, HIGH);
   }
+  */
 }
 static void WiFi_Setup(void){
    // Setup wifi
@@ -152,17 +160,21 @@ static void DHT11_TaskInit( void ){
   // delay(2000);
   dht_refresh_timestamp = millis();
 }
-static void DHT11_TaskMng( void ){
+static void Measures( void ){
    uint32_t now = millis();
-  float temperature, humidity;
+  float temperature, humidity, moist, Light;
+
   if( now - dht_refresh_timestamp >= DHT11_REFRESH_TIME ){
     dht_refresh_timestamp = now;
-    // Reading temperature or humidity takes about 250 milliseconds!
-    // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
     humidity = dht.readHumidity();
-    // Read temperature as Celsius (the default)
     temperature = dht.readTemperature();
-    // Check if any reads failed and exit early (to try again).
+    moist = analogRead(soilPin); 
+    Light = analogRead(LDRPin);
+
+    float voltage = Light / 4096. * 3.3;
+    float resistance = 2000 * voltage / (1 - voltage / 3.3);
+    float lux = pow(RL10 * 1e3 * pow(10, GAMMA) / resistance, (1 / GAMMA));
+
     if (isnan(humidity) || isnan(temperature) ) 
     {
       Serial.println(F("Failed to read from DHT sensor!"));
@@ -174,11 +186,19 @@ static void DHT11_TaskMng( void ){
       Serial.print(F("%  Temperature: "));
       Serial.print(temperature);
       Serial.println(F("°C "));
+      Serial.print(F("Soil Moisture: "));
+      Serial.println(moist_measure);
+      Serial.print(F("Luminosity: "));
+      Serial.println(Luminosity);
       // store this in the global variables
       dht_humidity = humidity;
       dht_temperature = temperature;
+      moist_measure = moist/4095.0*100.0; // Convert to percentage
+      //Luminosity = (lux/4095.0)*100.0; // Convert to percentage
       temp_buffer[sensor_buffer_idx] = dht_temperature;
       humidity_buffer[sensor_buffer_idx] = dht_humidity;
+      Moist_buffer[sensor_buffer_idx] = moist_measure;
+      Lumi_buffer[sensor_buffer_idx] = lux;
       sensor_buffer_idx++;
       if( sensor_buffer_idx >= SENSOR_BUFFER_SIZE )
       {
@@ -209,11 +229,12 @@ static void InfluxDB_TaskMng(void){
     sensor.addField("rssi", WiFi.RSSI());
     sensor.addField("temperature", Get_TemperatureValue());
     sensor.addField("humidity", Get_HumidityValue());
-    float moistureValue = Get_MoistureValue();
-    Serial.print("Moisture Value: ");
-    Serial.println(moistureValue);
-
     sensor.addField("moisture",Get_MoistureValue());
+    sensor.addField("luminosity",Get_LuminosityValue());
+
+    Serial.print("Moisture luminosidade: ");
+    Serial.println(Get_LuminosityValue());
+
     // Print what are we exactly writing
     Serial.print("Writing: ");
     Serial.println(client.pointToLineProtocol(sensor));
@@ -252,11 +273,22 @@ static float Get_TemperatureValue(void) {
     return temp;
 }
 
+
 static float Get_MoistureValue(void) {
  uint16_t idx = 0u;
     float temp = 0;
     for (idx = 0; idx < SENSOR_BUFFER_SIZE; idx++) {
         temp = temp + Moist_buffer[idx];
+    }
+    temp = temp / SENSOR_BUFFER_SIZE;
+    return temp;
+}
+
+static float Get_LuminosityValue(void) {
+ uint16_t idx = 0u;
+    float temp = 0;
+    for (idx = 0; idx < SENSOR_BUFFER_SIZE; idx++) {
+        temp = temp + Lumi_buffer[idx];
     }
     temp = temp / SENSOR_BUFFER_SIZE;
     return temp;
