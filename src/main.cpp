@@ -40,7 +40,7 @@ ESP8266WiFiMulti wifiMulti;
 #define INFLUXDB_TOKEN "qaAijaDITMPeRl6EkKtBmzx1mAt-H9UeG71jjAPmRioTIUlmP2Y0N_GnFgY1M4YXAAapc1QjUWcIlFPRUktvvA=="
 #define INFLUXDB_ORG "ac342d73b369637c"
 #define INFLUXDB_BUCKET "Estufa"
-//#define DEVICE            "estufa_001"
+
 #define INFLUXDB_SEND_TIME    (5000u) //10s
 #define DHT11_REFRESH_TIME    (2000u) //5s
 #define SENSOR_BUFFER_SIZE    (INFLUXDB_SEND_TIME/DHT11_REFRESH_TIME)
@@ -65,8 +65,6 @@ static float Get_TemperatureValue( void );
 static float Get_MoistureValue( void );
 static float Get_LuminosityValue( void );
 
-// Function to calculate the average moisture value
-// Remove this duplicate function definition as it is already defined earlier in the code.
 
 //variaveis
 float dht_temperature = 0;
@@ -78,7 +76,6 @@ const float GAMMA = 0.7;
 const float RL10 = 33;
 
 
-//float Moisture = 0;
 static float temp_buffer[SENSOR_BUFFER_SIZE] = { 0 };
 static float humidity_buffer[SENSOR_BUFFER_SIZE] = { 0 };
 static float Moist_buffer[SENSOR_BUFFER_SIZE] = { 0 };
@@ -143,7 +140,6 @@ void loop() {
   */
 }
 static void WiFi_Setup(void){
-   // Setup wifi
   Serial.println("Connecting to wifi");
   WiFi.mode(WIFI_STA);
   wifiMulti.addAP(WIFI_SSID, WIFI_PASSWORD);
@@ -157,7 +153,6 @@ static void WiFi_Setup(void){
 }
 static void DHT11_TaskInit( void ){
   dht.begin();
-  // delay(2000);
   dht_refresh_timestamp = millis();
 }
 static void Measures( void ){
@@ -190,11 +185,9 @@ static void Measures( void ){
       Serial.println(moist_measure);
       Serial.print(F("Luminosity: "));
       Serial.println(Luminosity);
-      // store this in the global variables
       dht_humidity = humidity;
       dht_temperature = temperature;
-      moist_measure = moist/4095.0*100.0; // Convert to percentage
-      //Luminosity = (lux/4095.0)*100.0; // Convert to percentage
+      moist_measure = moist/4095.0*100.0; 
       temp_buffer[sensor_buffer_idx] = dht_temperature;
       humidity_buffer[sensor_buffer_idx] = dht_humidity;
       Moist_buffer[sensor_buffer_idx] = moist_measure;
@@ -235,15 +228,14 @@ static void InfluxDB_TaskMng(void){
     Serial.print("Moisture luminosidade: ");
     Serial.println(Get_LuminosityValue());
 
-    // Print what are we exactly writing
     Serial.print("Writing: ");
     Serial.println(client.pointToLineProtocol(sensor));
-    // If no Wifi signal, try to reconnect it
+ 
     if (wifiMulti.run() != WL_CONNECTED)
     {
         Serial.println("Wifi connection lost");
     }
-    // Write point
+    
     if (!client.writePoint(sensor))
     {
       Serial.print("InfluxDB write failed: ");
